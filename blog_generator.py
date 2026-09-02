@@ -77,51 +77,37 @@ def slugify(text: str) -> str:
 
 def download_and_optimize_image(search_term: str, output_slug: str) -> str:
     """
-    Downloads a high-resolution widescreen cover image from Unsplash,
-    uses Pillow to resize & compress it, and saves it to public/blogimage/<slug>.jpg.
-    Returns the relative image URL path '/blogimage/<slug>.jpg'.
+    Downloads and optimizes a high-resolution widescreen cover image from Unsplash.
+    Saves locally if path exists and returns high-speed Unsplash CDN URL for 100% reliability across all environments.
     """
-    BLOG_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-    target_filename = f"{output_slug}.jpg"
-    target_filepath = BLOG_IMAGE_DIR / target_filename
-    relative_path = f"/blogimage/{target_filename}"
-
-    # Curated Unsplash HD Image Stream URLs matching topic categories
     image_sources = [
-        "https://images.unsplash.com/photo-1563986768609-322da13575f3?auto=format&fit=crop&w=1400&q=80",
-        "https://images.unsplash.com/photo-1517842645767-c639042777db?auto=format&fit=crop&w=1400&q=80",
-        "https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&w=1400&q=80",
-        "https://images.unsplash.com/photo-1499750310107-5fef28a66643?auto=format&fit=crop&w=1400&q=80",
-        "https://images.unsplash.com/photo-1568667256549-094345857637?auto=format&fit=crop&w=1400&q=80",
+        "https://images.unsplash.com/photo-1563986768609-322da13575f3?auto=format&fit=crop&w=1200&q=80",
+        "https://images.unsplash.com/photo-1517842645767-c639042777db?auto=format&fit=crop&w=1200&q=80",
+        "https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&w=1200&q=80",
+        "https://images.unsplash.com/photo-1499750310107-5fef28a66643?auto=format&fit=crop&w=1200&q=80",
+        "https://images.unsplash.com/photo-1568667256549-094345857637?auto=format&fit=crop&w=1200&q=80",
     ]
 
     selected_url = random.choice(image_sources)
 
     try:
-        req = urllib.request.Request(
-            selected_url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-        )
-        with urllib.request.urlopen(req, timeout=12) as response:
-            image_data = response.read()
+        if BLOG_IMAGE_DIR.exists():
+            target_filename = f"{output_slug}.jpg"
+            target_filepath = BLOG_IMAGE_DIR / target_filename
+            req = urllib.request.Request(
+                selected_url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as response:
+                image_data = response.read()
 
-        # Optimize image with Pillow
-        img = Image.open(io.BytesIO(image_data))
-        img = img.convert("RGB")
-        
-        # Resize to standard widescreen 1200x675 with high quality resampling
-        img.thumbnail((1200, 675), Image.Resampling.LANCZOS)
-        
-        # Save compressed JPEG at 85% quality
-        img.save(target_filepath, "JPEG", quality=85, optimize=True)
-        print(f"[Image Optimizer] Successfully processed and saved {target_filepath}")
-        return relative_path
-
+            img = Image.open(io.BytesIO(image_data)).convert("RGB")
+            img.thumbnail((1200, 675), Image.Resampling.LANCZOS)
+            img.save(target_filepath, "JPEG", quality=85, optimize=True)
     except Exception as e:
-        print(f"[Image Optimizer Note] Unsplash download fallback: {e}")
-        # Fallback to existing static image if offline or download error occurs
-        fallback_images = ["/blogimage/merge.png", "/blogimage/compress.png", "/blogimage/convert.jpg"]
-        return random.choice(fallback_images)
+        print(f"[Image Optimizer Note] Local save skipped: {e}")
+
+    return selected_url
 
 
 def update_sitemap_xml(blog_slug: str):

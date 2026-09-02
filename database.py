@@ -167,12 +167,44 @@ def get_blog_by_slug(slug: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def fix_broken_image_urls():
+    """
+    Updates any broken relative /blogimage/*.jpg image paths in SQLite database
+    and replaces them with working high-res Unsplash CDN URLs.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cdn_images = [
+        "https://images.unsplash.com/photo-1563986768609-322da13575f3?auto=format&fit=crop&w=1200&q=80",
+        "https://images.unsplash.com/photo-1517842645767-c639042777db?auto=format&fit=crop&w=1200&q=80",
+        "https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&w=1200&q=80",
+        "https://images.unsplash.com/photo-1499750310107-5fef28a66643?auto=format&fit=crop&w=1200&q=80",
+        "https://images.unsplash.com/photo-1568667256549-094345857637?auto=format&fit=crop&w=1200&q=80",
+    ]
+
+    cursor.execute("SELECT id, image FROM blogs")
+    rows = cursor.fetchall()
+
+    for row in rows:
+        img = row["image"]
+        if img.endswith(".jpg") and img.startswith("/blogimage/"):
+            # Replace broken server-only relative JPG with direct Unsplash CDN URL
+            import random
+            new_img = random.choice(cdn_images)
+            cursor.execute("UPDATE blogs SET image = ? WHERE id = ?", (new_img, row["id"]))
+
+    conn.commit()
+    conn.close()
+
+
 def export_to_json():
     """
     Reads all blog posts from SQLite and updates src/data/BlogPost.json.
     Also preserves existing static posts from BlogPost.json if DB is newly created.
     """
     init_db()
+    fix_broken_image_urls()
 
     # Load existing JSON data to preserve existing posts if any
     existing_featured = None
