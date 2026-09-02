@@ -75,11 +75,20 @@ def slugify(text: str) -> str:
     return re.sub(r"[-\s]+", "-", text).strip("-")
 
 
+# Backend image storage
+BACKEND_BLOGIMAGE_DIR = BACKEND_DIR / "blogimage"
+BACKEND_BLOGIMAGE_DIR.mkdir(parents=True, exist_ok=True)
+
 def download_and_optimize_image(search_term: str, output_slug: str) -> str:
     """
-    Downloads and optimizes a high-resolution widescreen cover image from Unsplash.
-    Saves locally if path exists and returns high-speed Unsplash CDN URL for 100% reliability across all environments.
+    Downloads high-resolution cover image from Unsplash, optimizes it with Pillow,
+    saves it locally to backend server storage (backend/blogimage/<slug>.jpg),
+    and returns relative path '/blogimage/<slug>.jpg'.
     """
+    target_filename = f"{output_slug}.jpg"
+    backend_filepath = BACKEND_BLOGIMAGE_DIR / target_filename
+    relative_path = f"/blogimage/{target_filename}"
+
     image_sources = [
         "https://images.unsplash.com/photo-1563986768609-322da13575f3?auto=format&fit=crop&w=1200&q=80",
         "https://images.unsplash.com/photo-1517842645767-c639042777db?auto=format&fit=crop&w=1200&q=80",
@@ -91,23 +100,30 @@ def download_and_optimize_image(search_term: str, output_slug: str) -> str:
     selected_url = random.choice(image_sources)
 
     try:
-        if BLOG_IMAGE_DIR.exists():
-            target_filename = f"{output_slug}.jpg"
-            target_filepath = BLOG_IMAGE_DIR / target_filename
-            req = urllib.request.Request(
-                selected_url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-            )
-            with urllib.request.urlopen(req, timeout=10) as response:
-                image_data = response.read()
+        req = urllib.request.Request(
+            selected_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            image_data = response.read()
 
-            img = Image.open(io.BytesIO(image_data)).convert("RGB")
-            img.thumbnail((1200, 675), Image.Resampling.LANCZOS)
-            img.save(target_filepath, "JPEG", quality=85, optimize=True)
+        img = Image.open(io.BytesIO(image_data)).convert("RGB")
+        img.thumbnail((1200, 675), Image.Resampling.LANCZOS)
+        
+        # Save locally in backend/blogimage
+        img.save(backend_filepath, "JPEG", quality=85, optimize=True)
+
+        # Also save in frontend public/blogimage if directory exists
+        if BLOG_IMAGE_DIR and BLOG_IMAGE_DIR.parent.exists():
+            BLOG_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+            img.save(BLOG_IMAGE_DIR / target_filename, "JPEG", quality=85, optimize=True)
+
+        print(f"[Image Optimizer] Successfully saved self-hosted image to {backend_filepath}")
+        return relative_path
+
     except Exception as e:
-        print(f"[Image Optimizer Note] Local save skipped: {e}")
-
-    return selected_url
+        print(f"[Image Optimizer Note] Download error ({e}), using default CDN image.")
+        return selected_url
 
 
 def update_sitemap_xml(blog_slug: str):

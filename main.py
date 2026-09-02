@@ -7,11 +7,17 @@ All endpoints return proper file downloads (FileResponse / StreamingResponse).
 CORS is open for localhost development (ports 3000–3100).
 """
 
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from routers import blog_router, compress, convert, edit, protect, session
 from database import init_db, seed_db_from_json
+
+BACKEND_DIR = Path(__file__).resolve().parent
+BLOGIMAGE_DIR = BACKEND_DIR / "blogimage"
+BLOGIMAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(
     title="PrestigePDF Backend",
@@ -20,6 +26,9 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# Mount local server blogimage directory
+app.mount("/blogimage", StaticFiles(directory=str(BLOGIMAGE_DIR)), name="blogimage")
 
 @app.on_event("startup")
 def startup_db():
