@@ -10,15 +10,21 @@ CORS is open for localhost development (ports 3000–3100).
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import compress, convert, edit, protect, session
+from routers import blog_router, compress, convert, edit, protect, session
+from database import init_db, seed_db_from_json
 
 app = FastAPI(
     title="PrestigePDF Backend",
-    description="Robust PDF processing backend: edit, convert, compress, protect.",
+    description="Robust PDF processing backend: edit, convert, compress, protect, blog automation.",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+@app.on_event("startup")
+def startup_db():
+    init_db()
+    seed_db_from_json()
 
 # ─── CORS ───────────────────────────────────────────────────────────────────
 app.add_middleware(
@@ -47,6 +53,7 @@ app.include_router(compress.router, tags=["Compress"])
 app.include_router(convert.router, tags=["Convert"])
 app.include_router(protect.router, tags=["Protect / Unlock"])
 app.include_router(session.router, tags=["PDF Session (Edit)"])
+app.include_router(blog_router.router, tags=["Blog Management"])
 
 
 # ─── Health ──────────────────────────────────────────────────────────────────
