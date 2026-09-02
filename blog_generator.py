@@ -23,10 +23,42 @@ from blog_scraper import scrape_online_pdf_topics
 # Paths
 BACKEND_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BACKEND_DIR.parent
-FRONTEND_DIR = PROJECT_ROOT / "tools-menu-magic-main"
+
+# Candidate paths for frontend assets on local & servers
+FRONTEND_CANDIDATES = [
+    PROJECT_ROOT / "tools-menu-magic-main",
+    PROJECT_ROOT / "frontend",
+    Path("/var/www/tools-menu-magic-main"),
+    Path("/var/www/html"),
+    Path("/var/www/frontend"),
+    PROJECT_ROOT,
+]
+
+FRONTEND_DIR = None
+for candidate in FRONTEND_CANDIDATES:
+    if (candidate / "public" / "sitemap.xml").exists() or (candidate / "src" / "data" / "BlogPost.json").exists():
+        FRONTEND_DIR = candidate
+        break
+
+if not FRONTEND_DIR:
+    FRONTEND_DIR = PROJECT_ROOT / "tools-menu-magic-main"
+
 PUBLIC_DIR = FRONTEND_DIR / "public"
 BLOG_IMAGE_DIR = PUBLIC_DIR / "blogimage"
 SITEMAP_PATH = PUBLIC_DIR / "sitemap.xml"
+
+# Also check root public folder for sitemap if public/sitemap.xml exists in parent or custom location
+if not SITEMAP_PATH.exists():
+    possible_sitemaps = [
+        Path("/var/www/html/sitemap.xml"),
+        Path("/var/www/tools-menu-magic-main/public/sitemap.xml"),
+        Path("/var/www/frontend/public/sitemap.xml"),
+        PROJECT_ROOT / "public" / "sitemap.xml",
+    ]
+    for p in possible_sitemaps:
+        if p.exists():
+            SITEMAP_PATH = p
+            break
 
 AUTHORS = [
     "Deepak Chalise",
