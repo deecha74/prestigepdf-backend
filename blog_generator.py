@@ -328,6 +328,16 @@ def generate_and_publish_post(topic_dict: Optional[Dict] = None) -> bool:
         # Update sitemap.xml
         update_sitemap_xml(post_data["slug"])
 
+        # Auto-trigger SSG static pre-rendering build
+        try:
+            if FRONTEND_DIR and (FRONTEND_DIR / "package.json").exists():
+                print(f"[Auto-Build] Triggering SSG static pre-rendering build in {FRONTEND_DIR}...")
+                import subprocess
+                subprocess.run("npm run build", cwd=str(FRONTEND_DIR), shell=True, check=False)
+                print("[Auto-Build] SSG static pre-rendering complete.")
+        except Exception as build_err:
+            print(f"[Auto-Build Note] Could not trigger auto-build: {build_err}")
+
         print(f"\n============================================================")
         print(f"  [SUCCESS] Published AdSense Article ID #{post_id}")
         print(f"  Title: {post_data['title']}")
