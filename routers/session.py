@@ -31,6 +31,13 @@ router = APIRouter(prefix="/pdf", tags=["PDF Session"])
 _sessions: dict = {}
 _lock = threading.Lock()
 SESSION_TTL = 7200  # 2 hours
+SESSION_DIR = os.path.join(tempfile.gettempdir(), "prestigepdf_sessions")
+os.makedirs(SESSION_DIR, exist_ok=True)
+
+
+def _get_session_path(session_id: str) -> str:
+    safe_id = "".join(c for c in session_id if c.isalnum() or c in "-_")
+    return os.path.join(SESSION_DIR, f"session_{safe_id}.pdf")
 
 
 def _auto_cleanup():
@@ -38,20 +45,38 @@ def _auto_cleanup():
     while True:
         time.sleep(300)  # every 5 min
         now = time.time()
-        expired = [sid for sid, s in _sessions.items() if now - s["created"] > SESSION_TTL]
-        for sid in expired:
-            _remove_session(sid)
+        with _lock:
+            expired = [sid for sid, s in _sessions.items() if now - s.get("created", 0) > SESSION_TTL]
+            for sid in expired:
+                info = _sessions.pop(sid, None)
+                if info and os.path.exists(info["path"]):
+                    try:
+                        os.remove(info["path"])
+                    except Exception:
+                        pass
+
+        try:
+            for fname in os.listdir(SESSION_DIR):
+                if fname.endswith(".pdf"):
+                    fpath = os.path.join(SESSION_DIR, fname)
+                    if now - os.path.getmtime(fpath) > SESSION_TTL:
+                        try:
+                            os.remove(fpath)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
 
 def _remove_session(sid: str):
     with _lock:
         info = _sessions.pop(sid, None)
-    if info:
-        try:
-            if os.path.exists(info["path"]):
-                os.remove(info["path"])
-        except Exception:
-            pass
+    tmp_path = _get_session_path(sid)
+    try:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+    except Exception:
+        pass
 
 
 threading.Thread(target=_auto_cleanup, daemon=True).start()
@@ -92,9 +117,30 @@ def _int_to_hex(color_int: int) -> str:
 def _get_session(session_id: str) -> dict:
     with _lock:
         info = _sessions.get(session_id)
-    if not info:
-        raise HTTPException(status_code=404, detail="Session not found or expired (> 2h). Please re-upload.")
-    return info
+        if info:
+            return info
+
+        # Disk auto-recovery if server restarted while file remains on disk
+        tmp_path = _get_session_path(session_id)
+        if os.path.exists(tmp_path):
+            file_mtime = os.path.getmtime(tmp_path)
+            if time.time() - file_mtime < SESSION_TTL:
+                try:
+                    doc = fitz.open(tmp_path)
+                    page_count = doc.page_count
+                    doc.close()
+                    recovered = {
+                        "path": tmp_path,
+                        "created": file_mtime,
+                        "page_count": page_count,
+                        "filename": "document.pdf",
+                    }
+                    _sessions[session_id] = recovered
+                    return recovered
+                except Exception:
+                    pass
+
+    raise HTTPException(status_code=404, detail="Session not found or expired (> 2h). Please re-upload.")
 
 
 # ── 1. Upload ────────────────────────────────────────────────────────────────
@@ -111,7 +157,8 @@ async def upload_pdf(file: UploadFile = File(...)):
     if not content.startswith(b"%PDF"):
         raise HTTPException(status_code=400, detail="Not a valid PDF file.")
 
-    tmp_path = tempfile.mktemp(suffix=".pdf")
+    sid = str(uuid.uuid4())
+    tmp_path = _get_session_path(sid)
     with open(tmp_path, "wb") as f:
         f.write(content)
 
@@ -122,10 +169,10 @@ async def upload_pdf(file: UploadFile = File(...)):
         pw, ph = first.rect.width, first.rect.height
         doc.close()
     except Exception as e:
-        os.remove(tmp_path)
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
         raise HTTPException(status_code=400, detail=f"Cannot parse PDF: {e}")
 
-    sid = str(uuid.uuid4())
     with _lock:
         _sessions[sid] = {
             "path": tmp_path,

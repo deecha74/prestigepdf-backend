@@ -421,26 +421,181 @@ async def pdf_to_images(
 # Office → PDF  (Word, Excel, PPT)
 # ─────────────────────────────────────────────────────
 
-async def _office_to_pdf(file: UploadFile, ext: str, label: str) -> FileResponse:
-    """Shared handler for all Office → PDF conversions via LibreOffice."""
-    in_path = await save_upload(file, suffix=ext)
-    out_dir = make_tmp_dir()
+def _fallback_docx_to_pdf(in_path: str, out_path: str) -> None:
+    """Fallback DOCX → PDF using python-docx + PyMuPDF."""
+    import pymupdf as fitz
+    from docx import Document
+
+    doc_word = Document(in_path)
+    pdf = fitz.open()
+    page_width, page_height = 595.0, 842.0
+    margin = 50.0
+    usable_width = page_width - (margin * 2)
+
+    page = pdf.new_page(width=page_width, height=page_height)
+    y_cursor = margin
+
+    for p in doc_word.paragraphs:
+        text = p.text.strip()
+        if not text:
+            y_cursor += 10.0
+            continue
+
+        font_size = 11.0
+        if p.style and p.style.name and "Heading 1" in p.style.name:
+            font_size = 18.0
+        elif p.style and p.style.name and "Heading 2" in p.style.name:
+            font_size = 14.0
+
+        line_height = font_size * 1.35
+        if y_cursor + line_height > (page_height - margin):
+            page = pdf.new_page(width=page_width, height=page_height)
+            y_cursor = margin
+
+        rect = fitz.Rect(margin, y_cursor, margin + usable_width, y_cursor + line_height + 20)
+        rc = page.insert_textbox(rect, text, fontsize=font_size, fontname="helv")
+        if rc < 0:
+            page = pdf.new_page(width=page_width, height=page_height)
+            y_cursor = margin
+            rect = fitz.Rect(margin, y_cursor, margin + usable_width, y_cursor + line_height + 20)
+            page.insert_textbox(rect, text, fontsize=font_size, fontname="helv")
+
+        y_cursor += max(line_height, 16.0)
+
+    for table in doc_word.tables:
+        for row in table.rows:
+            row_text = " | ".join([cell.text.strip() for cell in row.cells if cell.text.strip()])
+            if not row_text:
+                continue
+            if y_cursor + 16 > (page_height - margin):
+                page = pdf.new_page(width=page_width, height=page_height)
+                y_cursor = margin
+            rect = fitz.Rect(margin, y_cursor, margin + usable_width, y_cursor + 20)
+            page.insert_textbox(rect, row_text, fontsize=10, fontname="courier")
+            y_cursor += 16.0
+
+    if pdf.page_count == 0:
+        page = pdf.new_page(width=page_width, height=page_height)
+        page.insert_text((margin, margin), "Document", fontsize=12)
+
+    pdf.save(out_path)
+    pdf.close()
+
+
+def _fallback_xlsx_to_pdf(in_path: str, out_path: str) -> None:
+    """Fallback XLSX → PDF using openpyxl + PyMuPDF."""
+    import pymupdf as fitz
+    from openpyxl import load_workbook
+
+    wb = load_workbook(in_path, data_only=True)
+    pdf = fitz.open()
+
+    page_width, page_height = 842.0, 595.0  # Landscape A4
+    margin = 40.0
+    usable_width = page_width - (margin * 2)
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        page = pdf.new_page(width=page_width, height=page_height)
+        y_cursor = margin
+
+        page.insert_text((margin, y_cursor), f"Sheet: {sheet_name}", fontsize=14, fontname="helv", color=(0.1, 0.3, 0.7))
+        y_cursor += 25.0
+
+        for row in ws.iter_rows(values_only=True):
+            cells = [str(c) if c is not None else "" for c in row]
+            if not any(cells):
+                continue
+            row_str = " | ".join(cells)
+            if len(row_str) > 130:
+                row_str = row_str[:130] + "..."
+
+            if y_cursor + 16 > (page_height - margin):
+                page = pdf.new_page(width=page_width, height=page_height)
+                y_cursor = margin
+
+            rect = fitz.Rect(margin, y_cursor, margin + usable_width, y_cursor + 18)
+            page.insert_textbox(rect, row_str, fontsize=9, fontname="courier")
+            y_cursor += 16.0
+
+    if pdf.page_count == 0:
+        page = pdf.new_page(width=page_width, height=page_height)
+        page.insert_text((margin, margin), "Spreadsheet", fontsize=12)
+
+    pdf.save(out_path)
+    pdf.close()
+
+
+def _fallback_pptx_to_pdf(in_path: str, out_path: str) -> None:
+    """Fallback PPTX → PDF using python-pptx (if available) or PyMuPDF."""
+    import pymupdf as fitz
+
+    pdf = fitz.open()
+    page_width, page_height = 792.0, 612.0  # Landscape
+    margin = 40.0
+    usable_width = page_width - (margin * 2)
 
     try:
-        out_path = _libreoffice_convert(in_path, out_dir, "pdf")
-        if not out_path:
-            raise Exception(
-                "LibreOffice is not installed or not found. "
-                "Please install LibreOffice from https://www.libreoffice.org/download/ "
-                "and ensure 'soffice' is accessible."
-            )
+        from pptx import Presentation
+        prs = Presentation(in_path)
+        for i, slide in enumerate(prs.slides):
+            page = pdf.new_page(width=page_width, height=page_height)
+            y_cursor = margin
+
+            page.insert_text((margin, y_cursor), f"Slide {i + 1}", fontsize=14, fontname="helv", color=(0.1, 0.3, 0.7))
+            y_cursor += 30.0
+
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text.strip():
+                    text = shape.text.strip()
+                    if y_cursor + 20 > (page_height - margin):
+                        break
+                    rect = fitz.Rect(margin, y_cursor, margin + usable_width, y_cursor + 40)
+                    page.insert_textbox(rect, text, fontsize=11, fontname="helv")
+                    y_cursor += 35.0
+    except Exception:
+        page = pdf.new_page(width=page_width, height=page_height)
+        page.insert_text((margin, margin), "Presentation Document", fontsize=12)
+
+    if pdf.page_count == 0:
+        page = pdf.new_page(width=page_width, height=page_height)
+        page.insert_text((margin, margin), "Presentation Document", fontsize=12)
+
+    pdf.save(out_path)
+    pdf.close()
+
+
+async def _office_to_pdf(file: UploadFile, ext: str, label: str) -> FileResponse:
+    """Shared handler for all Office → PDF conversions via LibreOffice with Python fallback."""
+    in_path = await save_upload(file, suffix=ext)
+    out_dir = make_tmp_dir()
+    orig_name = Path(file.filename or "document").stem
+    out_path = os.path.join(out_dir, f"{orig_name}.pdf")
+
+    try:
+        lo_out = _libreoffice_convert(in_path, out_dir, "pdf")
+        if lo_out and os.path.exists(lo_out):
+            out_path = lo_out
+        else:
+            # Python fallback when LibreOffice is not installed
+            if ext in [".docx", ".doc"]:
+                _fallback_docx_to_pdf(in_path, out_path)
+            elif ext in [".xlsx", ".xls"]:
+                _fallback_xlsx_to_pdf(in_path, out_path)
+            elif ext in [".pptx", ".ppt"]:
+                _fallback_pptx_to_pdf(in_path, out_path)
+            else:
+                raise Exception("Conversion unsupported")
+
+        if not os.path.exists(out_path):
+            raise Exception("Failed to generate PDF document")
+
     except Exception as e:
         cleanup(in_path)
         cleanup_dir(out_dir)
         raise HTTPException(status_code=500, detail=str(e))
 
     cleanup(in_path)
-    orig_name = Path(file.filename or "document").stem
     return FileResponse(
         out_path,
         media_type="application/pdf",
@@ -451,17 +606,17 @@ async def _office_to_pdf(file: UploadFile, ext: str, label: str) -> FileResponse
 
 @router.post("/word-to-pdf")
 async def word_to_pdf(file: UploadFile = File(...)):
-    """Convert Word (.docx/.doc) to PDF using LibreOffice headless."""
+    """Convert Word (.docx/.doc) to PDF using LibreOffice headless (with Python fallback)."""
     return await _office_to_pdf(file, ".docx", "Word")
 
 
 @router.post("/excel-to-pdf")
 async def excel_to_pdf(file: UploadFile = File(...)):
-    """Convert Excel (.xlsx/.xls) to PDF using LibreOffice headless."""
+    """Convert Excel (.xlsx/.xls) to PDF using LibreOffice headless (with Python fallback)."""
     return await _office_to_pdf(file, ".xlsx", "Excel")
 
 
 @router.post("/ppt-to-pdf")
 async def ppt_to_pdf(file: UploadFile = File(...)):
-    """Convert PowerPoint (.pptx/.ppt) to PDF using LibreOffice headless."""
+    """Convert PowerPoint (.pptx/.ppt) to PDF using LibreOffice headless (with Python fallback)."""
     return await _office_to_pdf(file, ".pptx", "PowerPoint")
