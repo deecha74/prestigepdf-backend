@@ -161,6 +161,36 @@ def update_sitemap_xml(blog_slug: str):
                 f.write(updated_content)
             print(f"[Sitemap Update] Added {blog_url} to sitemap.xml")
 
+            # Ping Search Engines (Google & Bing/IndexNow) for instant indexing
+            try:
+                import urllib.request
+                import json
+
+                for ping_sitemap in ["https://api.prestigepdf.com/sitemap.xml", "https://www.prestigepdf.com/sitemap.xml"]:
+                    google_ping_url = f"https://www.google.com/ping?sitemap={ping_sitemap}"
+                    ping_req = urllib.request.Request(google_ping_url, headers={"User-Agent": "PrestigePDF-Bot/1.0"})
+                    try:
+                        urllib.request.urlopen(ping_req, timeout=5)
+                        print(f"[SEO Ping] Pinged Google for {ping_sitemap}")
+                    except Exception:
+                        pass
+
+                indexnow_payload = json.dumps({
+                    "host": "www.prestigepdf.com",
+                    "key": "prestigepdf2026indexnowkey",
+                    "keyLocation": "https://www.prestigepdf.com/sitemap.xml",
+                    "urlList": [blog_url]
+                }).encode("utf-8")
+                indexnow_req = urllib.request.Request(
+                    "https://api.indexnow.org/indexnow",
+                    data=indexnow_payload,
+                    headers={"Content-Type": "application/json; charset=utf-8"}
+                )
+                urllib.request.urlopen(indexnow_req, timeout=5)
+                print(f"[SEO Ping] Submitted {blog_url} to IndexNow API for instant Bing/Yandex indexing.")
+            except Exception as ping_err:
+                print(f"[SEO Ping Note] Search engine notification note: {ping_err}")
+
     except Exception as e:
         print(f"[Sitemap Error] Failed to update sitemap.xml: {e}")
 
