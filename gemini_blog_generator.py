@@ -17,13 +17,14 @@ import json
 import os
 import re
 import random
+import textwrap
 import urllib.request
 import urllib.error
 import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from difflib import SequenceMatcher
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from dotenv import load_dotenv
 
@@ -489,44 +490,165 @@ def _parse_gemini_json(raw: str, topic: str) -> Dict[str, Any]:
     return post
 
 
-def generate_ai_cover_image(topic: str, slug: str) -> str:
+def _get_thumbnail_font(size: int, bold: bool = True) -> ImageFont.ImageFont:
+    """Finds the best available TrueType font on Windows or Linux with fallback."""
+    candidates = [
+        # Windows standard fonts
+        "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/segoeuib.ttf" if bold else "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/impact.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
+        # Linux standard fonts (Ubuntu, Debian, CentOS, cPanel VPS)
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf" if bold else "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ]
+    for c in candidates:
+        if Path(c).exists():
+            try:
+                return ImageFont.truetype(c, size)
+            except Exception:
+                pass
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _composite_attention_thumbnail(
+    base_img: Image.Image,
+    title: str,
+    category: str = "PDF Tips",
+    excerpt: str = "",
+) -> Image.Image:
     """
-    Generates a high-quality AI cover illustration for the blog post using Flux (via Pollinations).
-    Returns the direct CDN URL so the image loads everywhere (static frontend, private backend,
-    social cards, and Google Image Search) without static hosting sync issues.
-    Also saves a local backup in backend/blogimage/<slug>.jpg.
+    Overlays a high-CTR, attention-grabbing graphic card on the 3D AI background:
+      - Smooth dark gradient scrim on the left for 100% typography contrast
+      - Vibrant category pill badge (e.g., [ SECURITY GUIDE ], [ HOW-TO ], [ PDF TIPS ])
+      - Bold, uppercase headline with drop shadow
+      - Subtitle hook
+      - PrestigePDF watermark
+    """
+    W, H = 1200, 675
+    img = base_img.resize((W, H), Image.Resampling.LANCZOS).convert("RGBA")
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # 1. Smooth alpha gradient scrim across the left 72%
+    for x in range(int(W * 0.72)):
+        alpha = int(225 * (1 - (x / (W * 0.72))))
+        draw.line([(x, 0), (x, H)], fill=(10, 15, 30, alpha))
+
+    font_badge = _get_thumbnail_font(22, bold=True)
+    font_title = _get_thumbnail_font(48, bold=True)
+    font_sub   = _get_thumbnail_font(24, bold=False)
+
+    # 2. Category badge color
+    cat_lower = (category or "PDF Tips").lower()
+    badge_colors = {
+        "security": (16, 185, 129, 240),      # Emerald
+        "how-to guides": (124, 58, 237, 240),  # Violet
+        "conversion": (245, 158, 11, 240),     # Amber
+        "productivity": (14, 165, 233, 240),   # Sky Blue
+        "pdf tips": (37, 99, 235, 240),        # Royal Blue
+    }
+    badge_bg = badge_colors.get(cat_lower, (37, 99, 235, 240))
+    cat_clean = (category or "PDF Tips").strip()
+    badge_text = f"{cat_clean.upper()} GUIDE" if "guide" not in cat_clean.lower() else cat_clean.upper()
+
+    bbox = font_badge.getbbox(badge_text)
+    bw, bh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    bx, by = 65, 75
+    draw.rounded_rectangle([bx, by, bx + bw + 28, by + bh + 18], radius=8, fill=badge_bg)
+    draw.text((bx + 14, by + 8), badge_text, fill=(255, 255, 255), font=font_badge)
+
+    # 3. High-impact Title (wrap into 2-3 clean lines)
+    clean_title = title.split(":")[0].strip() if ":" in title and len(title.split(":")[0].strip()) > 15 else title.strip()
+    clean_title = clean_title.upper()
+    lines = textwrap.wrap(clean_title, width=24)[:3]
+
+    ty = by + bh + 45
+    for line in lines:
+        # Drop shadow
+        draw.text((bx + 2, ty + 2), line, fill=(0, 0, 0, 240), font=font_title)
+        # Main text
+        draw.text((bx, ty), line, fill=(255, 255, 255), font=font_title)
+        ty += 60
+
+    # 4. Subtitle hook
+    sub_text = (excerpt[:58] + "...") if len(excerpt) > 58 else (excerpt or "Practical step-by-step workflow guide")
+    draw.text((bx, ty + 15), sub_text, fill=(203, 213, 225), font=font_sub)
+
+    # 5. PrestigePDF Watermark
+    draw.text((bx, H - 55), "PrestigePDF • Verified Guide", fill=(148, 163, 184), font=font_sub)
+
+    return Image.alpha_composite(img, overlay).convert("RGB")
+
+
+def generate_ai_cover_image(
+    topic: str,
+    slug: str,
+    category: str = "PDF Tips",
+    excerpt: str = "",
+) -> str:
+    """
+    Generates a high-quality, attention-grabbing YouTube/Tech blog style cover image:
+      1. Renders a vibrant 3D isometric tech scene via Flux (Pollinations AI).
+      2. Composites bold typography, category pill badge, and hook subtitle.
+      3. Saves to backend/blogimage/<slug>.jpg and tools-menu-magic-main/public/blogimage/<slug>.jpg.
+      4. Returns the public URL so it renders instantly everywhere.
     """
     clean_topic = re.sub(r"[^\w\s]", " ", topic)
     image_prompt = (
-        f"minimalist modern 3d render of {clean_topic}, clean tech desk workspace, "
-        f"sleek digital documents and folders, soft vibrant studio lighting, isometric aesthetic, "
-        f"8k resolution, graphic design art, absolutely no text, no words, no letters"
+        f"vibrant modern 3d render of {clean_topic}, clean tech desk workspace, "
+        f"sleek glowing digital documents, modern tech aesthetic, 8k resolution, cinematic lighting"
     )
     encoded = urllib.parse.quote(image_prompt)
     seed = random.randint(1000, 999999)
     url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=675&seed={seed}&nologo=true"
 
-    print(f"[AI Image Generator] Generated unique AI cover URL for '{topic}':\n  -> {url}")
+    print(f"[AI Image Generator] Rendering 3D artwork for '{topic}'...")
 
-    # Save a local backup copy on the backend server
+    base_img = None
     try:
-        backend_dir = Path(__file__).resolve().parent
-        backend_img_dir = backend_dir / "blogimage"
-        backend_img_dir.mkdir(parents=True, exist_ok=True)
-        backend_file = backend_img_dir / f"{slug}.jpg"
-
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=15) as response:
+        with urllib.request.urlopen(req, timeout=20) as response:
             data = response.read()
-
-        img = Image.open(io.BytesIO(data)).convert("RGB")
-        img.thumbnail((1200, 675), Image.Resampling.LANCZOS)
-        img.save(backend_file, "JPEG", quality=85, optimize=True)
-        print(f"[AI Image Generator] [OK] Saved local backup image: {backend_file}")
+        base_img = Image.open(io.BytesIO(data))
     except Exception as e:
-        print(f"[AI Image Generator] Note: Local backup save skipped ({e}). CDN URL is active.")
+        print(f"[AI Image Generator] Note: Background art fallback ({e}). Creating modern tech backdrop...")
+        # Create a sleek dark gradient background if network times out
+        base_img = Image.new("RGB", (1200, 675), (15, 23, 42))
 
-    return url
+    # Composite high-CTR attention-grabbing typography & badge
+    final_thumbnail = _composite_attention_thumbnail(
+        base_img=base_img,
+        title=topic,
+        category=category,
+        excerpt=excerpt,
+    )
+
+    # Save to backend & frontend
+    backend_dir = Path(__file__).resolve().parent
+    project_root = backend_dir.parent
+    backend_img_dir = backend_dir / "blogimage"
+    frontend_img_dir = project_root / "tools-menu-magic-main" / "public" / "blogimage"
+
+    backend_img_dir.mkdir(parents=True, exist_ok=True)
+    backend_file = backend_img_dir / f"{slug}.jpg"
+    final_thumbnail.save(backend_file, "JPEG", quality=88, optimize=True)
+    print(f"[AI Image Generator] [OK] Saved attention thumbnail: {backend_file}")
+
+    if frontend_img_dir.parent.exists():
+        try:
+            frontend_img_dir.mkdir(parents=True, exist_ok=True)
+            frontend_file = frontend_img_dir / f"{slug}.jpg"
+            final_thumbnail.save(frontend_file, "JPEG", quality=88, optimize=True)
+        except Exception:
+            pass
+
+    # Build public URL
+    api_base = os.getenv("PUBLIC_API_URL", "https://api.prestigepdf.com").rstrip("/")
+    return f"{api_base}/blogimage/{slug}.jpg"
 
 
 def generate_gemini_post(
@@ -612,9 +734,12 @@ def generate_and_publish_gemini_post(
 
     post = generate_gemini_post(topic, word_count, pillar_id=pillar_id)
 
-    # Generate unique AI cover image
+    # Generate unique AI cover image with attention-grabbing typography & badge
     image_path = generate_ai_cover_image(
-        post.get("title", topic or "PDF Tools Guide"), post["slug"]
+        topic=post.get("title", topic or "PDF Tools Guide"),
+        slug=post["slug"],
+        category=post.get("category", "PDF Tips"),
+        excerpt=post.get("excerpt", ""),
     )
     post["image"] = image_path
 
