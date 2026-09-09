@@ -56,6 +56,26 @@ def init_db():
     print(f"[SQLite] Database initialized at {DB_PATH}")
 
 
+def clean_database_descriptions():
+    """
+    Cleans any existing blog post descriptions in SQLite that contain literal '\\n' escape strings.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, description FROM blogs")
+        rows = cursor.fetchall()
+        for row in rows:
+            desc = row["description"]
+            if desc and (r"\n" in desc or r"\r" in desc):
+                cleaned_desc = desc.replace(r"\r\n", "\n").replace(r"\n", "\n").replace(r"\r", "")
+                cursor.execute("UPDATE blogs SET description = ? WHERE id = ?", (cleaned_desc, row["id"]))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[SQLite] Warning cleaning descriptions: {e}")
+
+
 def insert_blog_post(post: Dict[str, Any]) -> Optional[int]:
     """
     Inserts a new blog post into SQLite DB and triggers JSON export.
@@ -65,6 +85,10 @@ def insert_blog_post(post: Dict[str, Any]) -> Optional[int]:
     cursor = conn.cursor()
 
     try:
+        desc = post["description"]
+        if isinstance(desc, str):
+            desc = desc.replace(r"\r\n", "\n").replace(r"\n", "\n").replace(r"\r", "")
+
         cursor.execute(
             """
             INSERT INTO blogs (
@@ -76,7 +100,7 @@ def insert_blog_post(post: Dict[str, Any]) -> Optional[int]:
                 post["title"],
                 post["slug"],
                 post["excerpt"],
-                post["description"],
+                desc,
                 post.get("metaDescription", post.get("meta_description", "")),
                 post.get("category", "PDF Guides"),
                 post.get("readTime", post.get("read_time", "6 min")),
@@ -118,12 +142,15 @@ def get_all_blogs() -> List[Dict[str, Any]]:
 
     posts = []
     for row in rows:
+        desc = row["description"] or ""
+        if r"\n" in desc or r"\r" in desc:
+            desc = desc.replace(r"\r\n", "\n").replace(r"\n", "\n").replace(r"\r", "")
         posts.append({
             "id": row["id"],
             "title": row["title"],
             "slug": row["slug"],
             "excerpt": row["excerpt"],
-            "description": row["description"],
+            "description": desc,
             "metaDescription": row["meta_description"],
             "category": row["category"],
             "readTime": row["read_time"],
@@ -150,12 +177,16 @@ def get_blog_by_slug(slug: str) -> Optional[Dict[str, Any]]:
     if not row:
         return None
 
+    desc = row["description"] or ""
+    if r"\n" in desc or r"\r" in desc:
+        desc = desc.replace(r"\r\n", "\n").replace(r"\n", "\n").replace(r"\r", "")
+
     return {
         "id": row["id"],
         "title": row["title"],
         "slug": row["slug"],
         "excerpt": row["excerpt"],
-        "description": row["description"],
+        "description": desc,
         "metaDescription": row["meta_description"],
         "category": row["category"],
         "readTime": row["read_time"],
@@ -169,30 +200,18 @@ def get_blog_by_slug(slug: str) -> Optional[Dict[str, Any]]:
 
 def fix_broken_image_urls():
     """
-    Updates any broken relative /blogimage/*.jpg image paths in SQLite database
-    and replaces them with working high-res Unsplash CDN URLs.
+    Ensures posts have a valid image. Only fills empty or null image entries,
+    never overwrites AI-generated Flux images or existing valid URLs.
     """
     conn = get_connection()
     cursor = conn.cursor()
 
-    cdn_images = [
-        "https://images.unsplash.com/photo-1563986768609-322da13575f3?auto=format&fit=crop&w=1200&q=80",
-        "https://images.unsplash.com/photo-1517842645767-c639042777db?auto=format&fit=crop&w=1200&q=80",
-        "https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&w=1200&q=80",
-        "https://images.unsplash.com/photo-1499750310107-5fef28a66643?auto=format&fit=crop&w=1200&q=80",
-        "https://images.unsplash.com/photo-1568667256549-094345857637?auto=format&fit=crop&w=1200&q=80",
-    ]
-
-    cursor.execute("SELECT id, image FROM blogs")
+    default_cdn = "https://images.unsplash.com/photo-1563986768609-322da13575f3?auto=format&fit=crop&w=1200&q=80"
+    cursor.execute("SELECT id, image FROM blogs WHERE image IS NULL OR image = ''")
     rows = cursor.fetchall()
 
     for row in rows:
-        img = row["image"]
-        if img.endswith(".jpg") and img.startswith("/blogimage/"):
-            # Replace broken server-only relative JPG with direct Unsplash CDN URL
-            import random
-            new_img = random.choice(cdn_images)
-            cursor.execute("UPDATE blogs SET image = ? WHERE id = ?", (new_img, row["id"]))
+        cursor.execute("UPDATE blogs SET image = ? WHERE id = ?", (default_cdn, row["id"]))
 
     conn.commit()
     conn.close()
@@ -205,6 +224,7 @@ def export_to_json():
     """
     init_db()
     fix_broken_image_urls()
+    clean_database_descriptions()
 
     # Load existing JSON data to preserve existing posts if any
     existing_featured = None

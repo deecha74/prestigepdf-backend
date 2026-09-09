@@ -380,11 +380,16 @@ def _call_gemini_api(prompt: str) -> str:
 
 def sanitize_ai_text(text: str) -> str:
     """
-    Cleans text to ensure 0 AI-tell punctuation like em-dashes (—) or en-dashes (–).
-    Replaces them with standard, natural human punctuation.
+    Cleans text to ensure:
+      - 0 AI-tell punctuation like em-dashes (—) or en-dashes (–).
+      - Converts literal escaped '\\n' and '\\r' strings into real newlines/spaces.
     """
     if not isinstance(text, str):
         return text
+
+    # Convert literal string escape sequences like \r\n, \n, \r into real newlines
+    text = text.replace(r"\r\n", "\n").replace(r"\n", "\n").replace(r"\r", "")
+
     # Replace em-dashes and en-dashes with comma or clean hyphen
     text = text.replace("—", ", ").replace("–", "-")
     # Clean up any clumsy spacing/punctuation produced by replacement
@@ -442,11 +447,12 @@ def _parse_gemini_json(raw: str, topic: str) -> Dict[str, Any]:
             excerpt_m = re.search(r'"excerpt"\s*:\s*"([^"]+)"', json_str)
             meta_m = re.search(r'"metaDescription"\s*:\s*"([^"]+)"', json_str)
             if title_m and desc_m:
+                desc_raw = desc_m.group(1).replace(r"\r\n", "\n").replace(r"\n", "\n").replace(r"\r", "")
                 post = {
                     "title": title_m.group(1),
                     "slug": slugify(topic),
                     "excerpt": excerpt_m.group(1) if excerpt_m else title_m.group(1),
-                    "description": desc_m.group(1).replace("\n", " "),
+                    "description": desc_raw,
                     "metaDescription": meta_m.group(1) if meta_m else (excerpt_m.group(1) if excerpt_m else title_m.group(1)),
                     "category": "How-To Guides",
                     "readTime": "6 min",
@@ -457,10 +463,19 @@ def _parse_gemini_json(raw: str, topic: str) -> Dict[str, Any]:
             else:
                 raise ValueError(f"JSON parse error: {e}\nRaw (first 800):\n{json_str[:800]}")
 
-    # Sanitize all text fields to guarantee NO em-dashes (— or –) exist
+    # Sanitize all text fields to guarantee NO em-dashes (— or –) or literal \n exist
     for key in ("title", "excerpt", "description", "metaDescription", "keywords"):
         if key in post and isinstance(post[key], str):
             post[key] = sanitize_ai_text(post[key])
+
+    # Clean description specifically so any leftover literal '\n' strings are real whitespace
+    if "description" in post and isinstance(post["description"], str):
+        post["description"] = (
+            post["description"]
+            .replace(r"\r\n", "\n")
+            .replace(r"\n", "\n")
+            .replace(r"\r", "")
+        )
 
     # Ensure required fields
     if not post.get("slug"):
@@ -476,27 +491,11 @@ def _parse_gemini_json(raw: str, topic: str) -> Dict[str, Any]:
 
 def generate_ai_cover_image(topic: str, slug: str) -> str:
     """
-    Generates a high-quality AI cover illustration for the blog post using Flux (via Pollinations),
-    optimizes it with Pillow (1200x675 JPEG), and saves it to:
-      1. backend/blogimage/<slug>.jpg
-      2. tools-menu-magic-main/public/blogimage/<slug>.jpg
-    Returns relative URL '/blogimage/<slug>.jpg'.
-    Falls back gracefully to Unsplash if network is unavailable.
+    Generates a high-quality AI cover illustration for the blog post using Flux (via Pollinations).
+    Returns the direct CDN URL so the image loads everywhere (static frontend, private backend,
+    social cards, and Google Image Search) without static hosting sync issues.
+    Also saves a local backup in backend/blogimage/<slug>.jpg.
     """
-    backend_dir = Path(__file__).resolve().parent
-    project_root = backend_dir.parent
-    backend_img_dir = backend_dir / "blogimage"
-    frontend_img_dir = project_root / "tools-menu-magic-main" / "public" / "blogimage"
-
-    backend_img_dir.mkdir(parents=True, exist_ok=True)
-    frontend_img_dir.mkdir(parents=True, exist_ok=True)
-
-    target_filename = f"{slug}.jpg"
-    backend_file = backend_img_dir / target_filename
-    frontend_file = frontend_img_dir / target_filename
-    relative_path = f"/blogimage/{target_filename}"
-
-    # Clean topic for image generation prompt
     clean_topic = re.sub(r"[^\w\s]", " ", topic)
     image_prompt = (
         f"minimalist modern 3d render of {clean_topic}, clean tech desk workspace, "
@@ -507,31 +506,27 @@ def generate_ai_cover_image(topic: str, slug: str) -> str:
     seed = random.randint(1000, 999999)
     url = f"https://image.pollinations.ai/prompt/{encoded}?width=1200&height=675&seed={seed}&nologo=true"
 
-    print(f"[AI Image Generator] Generating AI cover illustration for '{topic}'...")
+    print(f"[AI Image Generator] Generated unique AI cover URL for '{topic}':\n  -> {url}")
 
+    # Save a local backup copy on the backend server
     try:
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-        )
-        with urllib.request.urlopen(req, timeout=25) as response:
+        backend_dir = Path(__file__).resolve().parent
+        backend_img_dir = backend_dir / "blogimage"
+        backend_img_dir.mkdir(parents=True, exist_ok=True)
+        backend_file = backend_img_dir / f"{slug}.jpg"
+
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as response:
             data = response.read()
 
         img = Image.open(io.BytesIO(data)).convert("RGB")
         img.thumbnail((1200, 675), Image.Resampling.LANCZOS)
-
-        # Save in backend
         img.save(backend_file, "JPEG", quality=85, optimize=True)
-        # Save in frontend public
-        img.save(frontend_file, "JPEG", quality=85, optimize=True)
-
-        print(f"[AI Image Generator] [OK] Successfully generated AI cover: {relative_path}")
-        return relative_path
-
+        print(f"[AI Image Generator] [OK] Saved local backup image: {backend_file}")
     except Exception as e:
-        print(f"[AI Image Generator] Note: AI image fallback triggered ({e}). Using curated photography...")
-        from blog_generator import download_and_optimize_image
-        return download_and_optimize_image(topic, slug)
+        print(f"[AI Image Generator] Note: Local backup save skipped ({e}). CDN URL is active.")
+
+    return url
 
 
 def generate_gemini_post(
