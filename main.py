@@ -7,6 +7,7 @@ All endpoints return proper file downloads (FileResponse / StreamingResponse).
 CORS is open for localhost development (ports 3000–3100).
 """
 
+import asyncio
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from routers import blog_router, compress, convert, edit, protect, session
 from database import init_db, seed_db_from_json
+from scheduler import scheduler_background_loop
 
 BACKEND_DIR = Path(__file__).resolve().parent
 BLOGIMAGE_DIR = BACKEND_DIR / "blogimage"
@@ -31,9 +33,11 @@ app = FastAPI(
 app.mount("/blogimage", StaticFiles(directory=str(BLOGIMAGE_DIR)), name="blogimage")
 
 @app.on_event("startup")
-def startup_db():
+async def startup_db():
     init_db()
     seed_db_from_json()
+    # Launch alternating-day blog publishing scheduler in the background
+    asyncio.create_task(scheduler_background_loop())
 
 # ─── CORS ───────────────────────────────────────────────────────────────────
 app.add_middleware(
@@ -89,6 +93,7 @@ async def dynamic_sitemap():
         ("https://www.prestigepdf.com/about-us", "0.6", "monthly"),
         ("https://www.prestigepdf.com/privacy", "0.5", "monthly"),
         ("https://www.prestigepdf.com/terms-of-service", "0.5", "monthly"),
+        ("https://www.prestigepdf.com/contact", "0.6", "monthly"),
         ("https://www.prestigepdf.com/tools/compress", "0.9", "weekly"),
         ("https://www.prestigepdf.com/tools/merge", "0.9", "weekly"),
         ("https://www.prestigepdf.com/tools/pdf-to-word", "0.9", "weekly"),
