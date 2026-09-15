@@ -116,6 +116,8 @@ async def dynamic_sitemap():
         ("https://www.prestigepdf.com/tools/number-pages", "0.75", "weekly"),
         ("https://www.prestigepdf.com/tools/crop", "0.75", "weekly"),
         ("https://www.prestigepdf.com/tools/flatten", "0.75", "weekly"),
+        ("https://www.prestigepdf.com/tools/html-to-pdf", "0.8", "weekly"),
+
     ]
 
     xml_lines = [
