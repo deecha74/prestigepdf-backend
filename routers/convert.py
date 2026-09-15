@@ -620,3 +620,105 @@ async def excel_to_pdf(file: UploadFile = File(...)):
 async def ppt_to_pdf(file: UploadFile = File(...)):
     """Convert PowerPoint (.pptx/.ppt) to PDF using LibreOffice headless (with Python fallback)."""
     return await _office_to_pdf(file, ".pptx", "PowerPoint")
+
+
+# ─────────────────────────────────────────────────────
+# HTML → PDF helpers
+# ─────────────────────────────────────────────────────
+
+def _html_to_pdf_bytes(html_content: str) -> bytes:
+    """Convert raw HTML string to PDF bytes. Uses WeasyPrint; falls back to pdfkit/wkhtmltopdf."""
+    # Try WeasyPrint first
+    try:
+        from weasyprint import HTML
+        return HTML(string=html_content).write_pdf()
+    except ImportError:
+        pass
+
+    # Try pdfkit (wkhtmltopdf)
+    try:
+        import pdfkit
+        return pdfkit.from_string(html_content, False)
+    except Exception:
+        pass
+
+    # Minimal fallback: wrap text in a simple PDF via reportlab
+    try:
+        from reportlab.pdfgen import canvas as rl_canvas
+        buf = io.BytesIO()
+        c = rl_canvas.Canvas(buf)
+        c.drawString(72, 720, "HTML conversion requires WeasyPrint or wkhtmltopdf.")
+        c.save()
+        return buf.getvalue()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"No HTML→PDF backend available: {exc}")
+
+
+def _url_to_pdf_bytes(url: str) -> bytes:
+    """Fetch a URL and convert to PDF. Uses playwright if available, else WeasyPrint+requests."""
+    # Try playwright (headless Chromium – best quality)
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(url, wait_until="networkidle", timeout=30000)
+            pdf_bytes = page.pdf(format="A4", print_background=True)
+            browser.close()
+            return pdf_bytes
+    except ImportError:
+        pass
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Playwright error: {exc}")
+
+    # Fallback: fetch HTML then WeasyPrint/pdfkit
+    try:
+        import requests as _requests
+        resp = _requests.get(url, timeout=20)
+        resp.raise_for_status()
+        return _html_to_pdf_bytes(resp.text)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch URL: {exc}")
+
+
+# ─────────────────────────────────────────────────────
+# HTML → PDF endpoints
+# ─────────────────────────────────────────────────────
+
+@router.post("/html-to-pdf/url")
+async def html_to_pdf_url(url: str = Form(...)):
+    """Convert a public URL to PDF."""
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
+    pdf_bytes = _url_to_pdf_bytes(url)
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=converted.pdf"},
+    )
+
+
+@router.post("/html-to-pdf/file")
+async def html_to_pdf_file(file: UploadFile = File(...)):
+    """Convert an uploaded HTML file to PDF."""
+    content = (await file.read()).decode("utf-8", errors="replace")
+    pdf_bytes = _html_to_pdf_bytes(content)
+    orig_stem = Path(file.filename or "document").stem
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={orig_stem}.pdf"},
+    )
+
+
+@router.post("/html-to-pdf/code")
+async def html_to_pdf_code(html: str = Form(...)):
+    """Convert raw HTML code string to PDF."""
+    if not html.strip():
+        raise HTTPException(status_code=400, detail="HTML content cannot be empty")
+    pdf_bytes = _html_to_pdf_bytes(html)
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=html-to-pdf.pdf"},
+    )
