@@ -655,8 +655,8 @@ def _html_to_pdf_bytes(html_content: str) -> bytes:
 
 
 def _url_to_pdf_bytes(url: str) -> bytes:
-    """Fetch a URL and convert to PDF. Uses playwright if available, else WeasyPrint+requests."""
-    # Try playwright (headless Chromium – best quality)
+    """Fetch a URL and convert to PDF. Uses playwright if available, else WeasyPrint native URL fetch."""
+    # Try playwright (headless Chromium – best quality, renders JS)
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as pw:
@@ -671,14 +671,14 @@ def _url_to_pdf_bytes(url: str) -> bytes:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Playwright error: {exc}")
 
-    # Fallback: fetch HTML then WeasyPrint/pdfkit
+    # Fallback: WeasyPrint native URL fetch (handles CSS, images, fonts)
+    # This is much better than fetching HTML manually then converting
     try:
-        import requests as _requests
-        resp = _requests.get(url, timeout=20)
-        resp.raise_for_status()
-        return _html_to_pdf_bytes(resp.text)
+        from weasyprint import HTML
+        return HTML(url=url).write_pdf()
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch URL: {exc}")
+        raise HTTPException(status_code=502, detail=f"Failed to convert URL to PDF: {exc}")
+
 
 
 # ─────────────────────────────────────────────────────
