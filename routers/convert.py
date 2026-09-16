@@ -654,43 +654,68 @@ def _html_to_pdf_bytes(html_content: str) -> bytes:
         raise HTTPException(status_code=500, detail=f"No HTML→PDF backend available: {exc}")
 
 
-def _url_to_pdf_bytes(url: str) -> bytes:
-    """Fetch a URL and convert to PDF. Uses playwright if available, else WeasyPrint native URL fetch."""
-    # Try playwright (headless Chromium – best quality, renders JS)
+async def _url_to_pdf_bytes(url: str) -> bytes:
+    """Fetch a URL and convert to PDF. Uses Playwright async if available (renders JS, canvas, charts),
+    falling back to fetching HTML with standard browser headers + WeasyPrint."""
+    # 1. Try Playwright (Headless Chromium - renders JS & charts)
     try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto(url, wait_until="networkidle", timeout=30000)
-            pdf_bytes = page.pdf(format="A4", print_background=True)
-            browser.close()
+        from playwright.async_api import async_playwright
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+            )
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 800},
+            )
+            page = await context.new_page()
+            await page.goto(url, wait_until="networkidle", timeout=30000)
+            pdf_bytes = await page.pdf(format="A4", print_background=True)
+            await browser.close()
             return pdf_bytes
-    except ImportError:
+    except Exception:
+        # Silently fall through to HTML fetch fallback
         pass
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Playwright error: {exc}")
 
-    # Fallback: WeasyPrint native URL fetch (handles CSS, images, fonts)
-    # This is much better than fetching HTML manually then converting
+    # 2. Fallback: Fetch page HTML using requests with realistic browser headers
+    html_content = None
+    try:
+        import requests
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+        }
+        resp = requests.get(url, headers=headers, timeout=20)
+        resp.raise_for_status()
+        html_content = resp.text
+    except Exception:
+        pass
+
+    # 3. Convert fetched HTML or native URL via WeasyPrint
     try:
         from weasyprint import HTML
+        if html_content:
+            return HTML(string=html_content, base_url=url).write_pdf()
         return HTML(url=url).write_pdf()
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to convert URL to PDF: {exc}")
+        raise HTTPException(
+            status_code=422,
+            detail=f"Failed to convert URL to PDF: {exc}",
+        )
 
 
-
-# ─────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # HTML → PDF endpoints
-# ─────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/html-to-pdf/url")
 async def html_to_pdf_url(url: str = Form(...)):
     """Convert a public URL to PDF."""
     if not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
-    pdf_bytes = _url_to_pdf_bytes(url)
+    pdf_bytes = await _url_to_pdf_bytes(url)
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
