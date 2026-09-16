@@ -12,6 +12,9 @@ Conversions:
 """
 
 import io
+import ipaddress
+import socket
+from urllib.parse import urlparse
 import os
 import shutil
 import subprocess
@@ -654,10 +657,30 @@ def _html_to_pdf_bytes(html_content: str) -> bytes:
         raise HTTPException(status_code=500, detail=f"No HTML→PDF backend available: {exc}")
 
 
+def _is_safe_public_url(url: str) -> bool:
+    """Validate that the target URL resolves to a public, non-loopback IP (SSRF protection)."""
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+        if hostname.lower() in ("localhost", "127.0.0.1", "::1"):
+            return False
+        ip = ipaddress.ip_address(socket.gethostbyname(hostname))
+        if ip.is_private or ip.is_loopback or ip.is_link_local:
+            return False
+        return True
+    except Exception:
+        return False
+
+
 async def _url_to_pdf_bytes(url: str) -> bytes:
-    """Fetch a URL and convert to PDF. Uses Playwright async if available (renders JS, canvas, charts),
-    falling back to fetching HTML with standard browser headers + WeasyPrint."""
-    # 1. Try Playwright (Headless Chromium - renders JS & charts)
+    """Render a public URL to PDF using headless Chromium with WeasyPrint fallback."""
+    # SSRF guard
+    if not _is_safe_public_url(url):
+        raise HTTPException(status_code=400, detail="Cannot render internal or private IP addresses.")
+
+    # 1. Try Playwright Async with domcontentloaded
     try:
         from playwright.async_api import async_playwright
         async with async_playwright() as pw:
@@ -665,20 +688,25 @@ async def _url_to_pdf_bytes(url: str) -> bytes:
                 headless=True,
                 args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
             )
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 800},
-            )
-            page = await context.new_page()
-            await page.goto(url, wait_until="networkidle", timeout=30000)
-            pdf_bytes = await page.pdf(format="A4", print_background=True)
-            await browser.close()
-            return pdf_bytes
+            try:
+                page = await browser.new_page(
+                    viewport={"width": 1440, "height": 900},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                )
+                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                await page.wait_for_timeout(1500)
+                pdf_bytes = await page.pdf(
+                    format="A4",
+                    print_background=True,
+                    margin={"top": "12mm", "right": "12mm", "bottom": "12mm", "left": "12mm"}
+                )
+                return pdf_bytes
+            finally:
+                await browser.close()
     except Exception:
-        # Silently fall through to HTML fetch fallback
         pass
 
-    # 2. Fallback: Fetch page HTML using requests with realistic browser headers
+    # 2. Fallback to HTML fetch + WeasyPrint
     html_content = None
     try:
         import requests
@@ -693,7 +721,6 @@ async def _url_to_pdf_bytes(url: str) -> bytes:
     except Exception:
         pass
 
-    # 3. Convert fetched HTML or native URL via WeasyPrint
     try:
         from weasyprint import HTML
         if html_content:
@@ -702,9 +729,8 @@ async def _url_to_pdf_bytes(url: str) -> bytes:
     except Exception as exc:
         raise HTTPException(
             status_code=422,
-            detail=f"Failed to convert URL to PDF: {exc}",
+            detail=f"Failed to convert URL to PDF: {exc}"
         )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HTML → PDF endpoints
