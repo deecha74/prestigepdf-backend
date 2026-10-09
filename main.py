@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from routers import blog_router, compress, convert, edit, protect, session
+from routers import blog_router, compress, convert, edit, protect, session, feedback_router
 from database import init_db, seed_db_from_json
 from scheduler import scheduler_background_loop
 
@@ -67,6 +67,7 @@ app.include_router(convert.router, tags=["Convert"])
 app.include_router(protect.router, tags=["Protect / Unlock"])
 app.include_router(session.router, tags=["PDF Session (Edit)"])
 app.include_router(blog_router.router, tags=["Blog Management"])
+app.include_router(feedback_router.router, tags=["Feedback"])
 
 
 # ─── Health & Dynamic Sitemap ──────────────────────────────────────────────────

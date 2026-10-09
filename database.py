@@ -51,6 +51,17 @@ def init_db():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool_id TEXT NOT NULL,
+            rating INTEGER NOT NULL,
+            tags TEXT,
+            comment TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
     print(f"[SQLite] Database initialized at {DB_PATH}")
@@ -309,6 +320,70 @@ def seed_db_from_json():
         print(f"[SQLite Seed Error]: {e}")
 
 
+def insert_feedback(
+    tool_id: str,
+    rating: int,
+    tags: Optional[List[str]] = None,
+    comment: Optional[str] = None
+) -> Optional[int]:
+    """Inserts a new verified user feedback record into SQLite."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    tags_str = json.dumps(tags or [])
+    clean_comment = (comment or "").strip()
+    cursor.execute(
+        "INSERT INTO feedback (tool_id, rating, tags, comment) VALUES (?, ?, ?, ?)",
+        (tool_id, rating, tags_str, clean_comment)
+    )
+    new_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return new_id
+
+
+def get_feedback_summary(tool_id: Optional[str] = None) -> Dict[str, Any]:
+    """Returns aggregated feedback metrics (count, avg rating) from SQLite."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    if tool_id and tool_id != "general":
+        cursor.execute(
+            "SELECT COUNT(*) as total, AVG(rating) as avg_rating FROM feedback WHERE tool_id = ?",
+            (tool_id,)
+        )
+    else:
+        cursor.execute("SELECT COUNT(*) as total, AVG(rating) as avg_rating FROM feedback")
+    row = cursor.fetchone()
+    total = row["total"] if row and row["total"] is not None else 0
+    avg_rating = round(float(row["avg_rating"]), 1) if row and row["avg_rating"] is not None else 0.0
+    conn.close()
+
+    return {
+        "total_reviews": total,
+        "average_rating": avg_rating,
+    }
+
+
+def get_all_feedback(limit: int = 50) -> List[Dict[str, Any]]:
+    """Retrieves recent user feedback items."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM feedback ORDER BY created_at DESC LIMIT ?", (limit,))
+    rows = cursor.fetchall()
+    results = []
+    for r in rows:
+        results.append({
+            "id": r["id"],
+            "tool_id": r["tool_id"],
+            "rating": r["rating"],
+            "tags": json.loads(r["tags"]) if r["tags"] else [],
+            "comment": r["comment"],
+            "created_at": r["created_at"],
+        })
+    conn.close()
+    return results
+
+
 if __name__ == "__main__":
     init_db()
     seed_db_from_json()
+

@@ -51,11 +51,12 @@ def main():
 
     args = parser.parse_args()
 
-    if args.now or not sys.argv[1:]:
-        print("[Manual Action] Triggering instant blog post generation...")
+    if args.now:
+        print("[Manual Action] Triggering single blog post generation...")
         generate_and_publish_post()
-    elif args.schedule:
-        run_scheduler()
+    elif args.schedule or not sys.argv[1:]:
+        print("[Disabled] Automated background blog publishing is disabled to maintain high-quality organic content policies.")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
