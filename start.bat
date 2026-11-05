@@ -2,7 +2,7 @@
 SETLOCAL
 
 echo ============================================================
-echo   PrestigePDF Backend - Startup Script
+echo   PrestigePDF Backend - Startup Script asda
 echo ============================================================
 echo.
 
